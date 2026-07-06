@@ -1,17 +1,3 @@
-"""
-Gesture recognition built on top of hand_tracking.py.
-
-Detects:
-  1. A snap (thumb + middle finger).
-  2. Open-closed-open hand as a single action ("from open, make a fist, then
-     open it again"). Open is the default reset state, so the gesture only fires
-     when the hand deliberately starts open, closes, and reopens.
-
-See GESTURES.md for a full explanation of how every part works.
-
-Run:  python gesture_recognition.py   (press 'q' to quit)
-"""
-
 import cv2
 import mediapipe as mp
 from mediapipe.tasks import python
@@ -22,9 +8,7 @@ import math
 
 import system_tools
 
-# ----------------------------------------------------------------------------
-# Landmark indices (see GESTURES.md, Section 1)
-# ----------------------------------------------------------------------------
+
 WRIST = 0
 THUMB_TIP = 4
 MIDDLE_MCP = 9
@@ -43,9 +27,6 @@ HAND_CONNECTIONS = [
     (0, 17),                               # Palm base
 ]
 
-# ----------------------------------------------------------------------------
-# Geometry helpers (see GESTURES.md, Section 2)
-# ----------------------------------------------------------------------------
 def dist(a, b):
     """2D distance between two normalized landmarks."""
     return math.hypot(a.x - b.x, a.y - b.y)
@@ -83,38 +64,17 @@ def hand_state(lm):
     return "other"
 
 
-# ----------------------------------------------------------------------------
-# The detector: holds memory across frames (see GESTURES.md, Sections 4 & 5)
-# ----------------------------------------------------------------------------
 class GestureDetector:
-    # ---- tunable thresholds (see GESTURES.md, Section 7) ----
-    # Snap detection is tuned slightly loose: we'd rather catch a real snap than
-    # demand a perfect one. A fist (open-closed-open) is still kept distinct via
-    # the hold requirement below, so the two never collide.
     PINCH_ON = 0.4          # thumb/middle distance (in palm units) to "arm" a snap
     PINCH_OFF = 0.45        # distance to confirm the fingers separated again
     SNAP_SPEED = 7.0        # middle-fingertip speed (palm-units / second) to fire
     SNAP_ARM_WINDOW = 0.45  # seconds: max gap between pinch and flick
-    SNAP_COOLDOWN = 0.6     # seconds: min gap between two snaps
-    # A real snap pinches thumb+middle while the hand is open, then the middle
-    # finger flicks down -- so the finger count collapses (typically 2 -> 1 or 0)
-    # and the tips spring apart. A slowly-closing fist keeps thumb+middle together
-    # (it never "releases"), which is what now separates the two.
+    SNAP_COOLDOWN = 0.6
     SNAP_ARM_FINGERS = 2    # hand must be at least this open to arm a snap
-    OPEN_WINDOW = 2.0       # seconds: max gap between each step of open-closed-open
-    # Open is the standard resting state and triggers nothing on its own. The
-    # open-closed-open action only fires when the hand is deliberately held in a
-    # fist before reopening. A snap collapses the finger count for only an
-    # instant, so requiring a real hold is what keeps a snap from also firing
-    # open-closed-open (which is how they used to be confused).
+    OPEN_WINDOW = 2.0     
     OPEN_CLOSED_OPEN_MIN_HOLD = 0.35  # seconds: fist must be held this long
 
     def __init__(self):
-        # open -> closed -> open state machine.
-        # phase: "idle" (haven't seen an open hand yet) -> "open" -> "closed" ->
-        # back to "open" fires. Starting in "idle" (not "open") means a hand that
-        # begins already closed can't fire on its first open: a plain closed->open
-        # is ignored, only a real open->closed->open counts.
         self.phase = "idle"
         self.phase_time = 0.0
         self.open_closed_open_count = 0
@@ -137,32 +97,20 @@ class GestureDetector:
         self.message_time = now
 
     def process(self, lm, timestamp_ms):
-        """Run both detectors on one hand's landmarks for one frame."""
         now = timestamp_ms / 1000.0  # seconds
         scale = palm_size(lm)
-
-        # --- DEBUG: uncomment to watch live numbers while tuning ---
-        # pinch_dbg = dist(lm[THUMB_TIP], lm[MIDDLE_TIP]) / scale
-        # print(f"state={hand_state(lm):6} pinch={pinch_dbg:.2f}")
 
         self._detect_open_closed_open(lm, now)
         self._detect_snap(lm, now, scale)
 
-    # ----- Gesture B: open -> closed -> open -----
     def _detect_open_closed_open(self, lm, now):
         state = hand_state(lm)
-
-        # An abandoned fist (held past the window) falls back to "idle", so the
-        # next open has to start a fresh open->closed->open from scratch.
         if self.phase == "closed" and now - self.phase_time > self.OPEN_WINDOW:
             self.phase = "idle"
             self.phase_time = now
 
         if state == "open":
             if self.phase == "closed":
-                # open -> closed -> open completed, but only fire if the fist was
-                # held long enough to be deliberate. A snap collapses the count
-                # for just an instant, so it falls under this hold and is ignored.
                 held = now - self.phase_time
                 if held >= self.OPEN_CLOSED_OPEN_MIN_HOLD:
                     self.open_closed_open_count += 1
@@ -172,15 +120,11 @@ class GestureDetector:
             self.phase = "open"
             self.phase_time = now
         elif state == "closed":
-            # Only advance to "closed" from a genuinely observed "open". From
-            # "idle" (hand started closed) we ignore it -- closed->open is not
-            # the gesture, only open->closed->open is.
+
             if self.phase == "open":
                 self.phase = "closed"
                 self.phase_time = now
-        # "other" is a transition pose: hold the current phase.
 
-    # ----- Gesture A: snap -----
     def _detect_snap(self, lm, now, scale):
         thumb_tip = lm[THUMB_TIP]
         middle_tip = lm[MIDDLE_TIP]
@@ -207,15 +151,10 @@ class GestureDetector:
                 recently_armed = self.armed and (now - self.armed_time <= self.SNAP_ARM_WINDOW)
                 released = pinch > self.PINCH_OFF
                 off_cooldown = now - self.last_snap_time > self.SNAP_COOLDOWN
-                # The snap signature: the middle finger flicked down, so the
-                # finger count dropped from where we armed. We no longer require a
-                # full fist (count <= 1) -- a real snap often keeps index/ring/
-                # pinky extended, so demanding a fist was missing most snaps.
+
+
                 collapsed = count < self.armed_count
 
-                # A slow fist also drops the count, but it never "releases"
-                # (thumb+middle stay together) and never reaches snap speed, so
-                # the speed + release checks keep snaps and fists distinct.
                 if (recently_armed and speed > self.SNAP_SPEED and released
                         and off_cooldown and collapsed):
                     self.snap_count += 1
@@ -227,7 +166,6 @@ class GestureDetector:
         self.prev_mid = mid
         self.prev_time = now
 
-    # ----- overlay text for the UI -----
     def overlay_lines(self, lm, now):
         count, _ = fingers_extended(lm)
         lines = [
@@ -239,10 +177,6 @@ class GestureDetector:
             lines.append(self.message)
         return lines
 
-
-# ----------------------------------------------------------------------------
-# MediaPipe plumbing (same as hand_tracking.py, plus the detector hook)
-# ----------------------------------------------------------------------------
 cv2.namedWindow("Gesture Recognition", cv2.WINDOW_NORMAL)
 
 latest_result = None
