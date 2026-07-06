@@ -1,22 +1,9 @@
-"""
-System control helpers for gesture_recognition.py.
-
-Two toggles, each flips between two states depending on the current state:
-
-  * toggle_screen()  -- sleep the screen if it's on, wake it if it's off.
-  * toggle_mute()    -- mute the default audio sink if unmuted, unmute if muted.
-
-Audio state is read back from the system (pactl), so mute/unmute always tracks
-reality. The screen's power state can't be read back reliably across X/Wayland,
-so we remember it ourselves and assume it starts awake.
-"""
-
 import shutil
 import subprocess
 
 
 def _run(cmd):
-    """Run a command, returning (ok, stdout). Never raises."""
+    "run command return ok"
     try:
         out = subprocess.run(
             cmd, capture_output=True, text=True, timeout=5, check=False
@@ -25,16 +12,10 @@ def _run(cmd):
     except (OSError, subprocess.SubprocessError):
         return False, ""
 
-
-# ----------------------------------------------------------------------------
-# Screen: sleep <-> wake  (driven by the snap gesture)
-# ----------------------------------------------------------------------------
-# We can't query screen state portably, so track it. Assume awake at startup.
 _screen_asleep = False
 
 
 def _sleep_screen():
-    """Blank/lock the screen using whatever is available."""
     # Wayland/GNOME: use loginctl to lock the session (blanks + locks)
     if shutil.which("loginctl"):
         ok, _ = _run(["loginctl", "lock-session"])
@@ -88,10 +69,6 @@ def toggle_screen():
         _screen_asleep = True
         return "asleep"
 
-
-# ----------------------------------------------------------------------------
-# Audio: mute <-> unmute  (driven by the open-closed-open gesture)
-# ----------------------------------------------------------------------------
 _DEFAULT_SINK = "@DEFAULT_SINK@"
 
 
